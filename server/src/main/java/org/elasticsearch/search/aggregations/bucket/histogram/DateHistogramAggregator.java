@@ -16,6 +16,12 @@ import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.Rounding;
 import org.elasticsearch.common.Rounding.DateTimeUnit;
 import org.elasticsearch.common.lease.Releasables;
+import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.common.util.Comparators;
+import org.elasticsearch.common.util.DoubleArray;
+import org.elasticsearch.common.util.LongArray;
+import org.elasticsearch.index.fielddata.SortedBinaryDocValues;
+import org.elasticsearch.index.fielddata.SortedNumericDoubleValues;
 import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.AdaptingAggregator;
 import org.elasticsearch.search.aggregations.Aggregator;
@@ -33,15 +39,16 @@ import org.elasticsearch.search.aggregations.bucket.range.RangeAggregationBuilde
 import org.elasticsearch.search.aggregations.bucket.range.RangeAggregator;
 import org.elasticsearch.search.aggregations.bucket.range.RangeAggregatorSupplier;
 import org.elasticsearch.search.aggregations.bucket.terms.LongKeyedBucketOrds;
+import org.elasticsearch.search.aggregations.metrics.CompensatedSum;
+import org.elasticsearch.search.aggregations.metrics.InternalStats;
+import org.elasticsearch.search.aggregations.metrics.NumericMetricsAggregator;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
 import org.elasticsearch.search.aggregations.support.ValuesSource;
 import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
+import org.elasticsearch.search.sort.SortOrder;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.function.BiConsumer;
 
 /**
@@ -78,6 +85,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         @Nullable LongBounds extendedBounds,
         @Nullable LongBounds hardBounds,
         ValuesSourceConfig valuesSourceConfig,
+        ValuesSourceConfig valueConfig,
         AggregationContext context,
         Aggregator parent,
         CardinalityUpperBound cardinality,
@@ -114,6 +122,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
             extendedBounds,
             hardBounds,
             valuesSourceConfig,
+            valueConfig,
             context,
             parent,
             cardinality,
@@ -204,6 +213,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
     }
 
     private final ValuesSource.Numeric valuesSource;
+    private final ValuesSource.Numeric valueSource;
     private final DocValueFormat formatter;
     private final Rounding rounding;
     /**
@@ -219,6 +229,10 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
 
     private final LongKeyedBucketOrds bucketOrds;
 
+    DoubleArray sums;
+    LongArray counts;
+    DoubleArray compensations;
+
     DateHistogramAggregator(
         String name,
         AggregatorFactories factories,
@@ -230,6 +244,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         @Nullable LongBounds extendedBounds,
         @Nullable LongBounds hardBounds,
         ValuesSourceConfig valuesSourceConfig,
+        ValuesSourceConfig valueConfig,
         AggregationContext context,
         Aggregator parent,
         CardinalityUpperBound cardinality,
@@ -246,9 +261,14 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         this.hardBounds = hardBounds;
         // TODO: Stop using null here
         this.valuesSource = valuesSourceConfig.hasValues() ? (ValuesSource.Numeric) valuesSourceConfig.getValuesSource() : null;
+        this.valueSource = (ValuesSource.Numeric) valueConfig.getValuesSource();
         this.formatter = valuesSourceConfig.format();
 
         bucketOrds = LongKeyedBucketOrds.build(bigArrays(), cardinality);
+
+        sums = bigArrays().newDoubleArray(1, true);
+        counts = bigArrays().newLongArray(1, true);
+        compensations = bigArrays().newDoubleArray(1, true);
     }
 
     @Override
@@ -259,21 +279,61 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         return super.scoreMode();
     }
 
+    static class DoubleTermValuesSource {
+        ValuesSource.Numeric source;
+
+        DoubleTermValuesSource(ValuesSource valuesSource) {
+            this.source = (ValuesSource.Numeric) valuesSource;
+        }
+
+        public Double getValues(LeafReaderContext ctx, int doc) throws IOException {
+            SortedNumericDoubleValues values = source.doubleValues(ctx);
+            return collectValues(values, doc);
+        }
+
+        private Double collectValues(SortedNumericDoubleValues values, int doc) throws IOException {
+            if (values.advanceExact(doc)) {
+                return values.nextValue();
+            } else {
+                return null;
+            }
+        }
+
+    }
+
     @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         if (valuesSource == null) {
             return LeafBucketCollector.NO_OP_COLLECTOR;
         }
         SortedNumericDocValues values = valuesSource.longValues(ctx);
+        DoubleTermValuesSource doubleTermValuesSource = new DoubleTermValuesSource(valueSource);
+        final CompensatedSum kahanSummation = new CompensatedSum(0, 0);
+
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {
+                if (owningBucketOrd >= counts.size()) {
+                    final long from = counts.size();
+                    final long overSize = BigArrays.overSize(owningBucketOrd + 1);
+                    counts = bigArrays().resize(counts, overSize);
+                    sums = bigArrays().resize(sums, overSize);
+                    compensations = bigArrays().resize(compensations, overSize);
+                }
+
                 if (values.advanceExact(doc)) {
                     int valuesCount = values.docValueCount();
+
+                    counts.increment(owningBucketOrd, valuesCount);
+                    double sum = sums.get(owningBucketOrd);
+                    double compensation = compensations.get(owningBucketOrd);
+                    kahanSummation.reset(sum, compensation);
 
                     long previousRounded = Long.MIN_VALUE;
                     for (int i = 0; i < valuesCount; ++i) {
                         long value = values.nextValue();
+                        double result = doubleTermValuesSource.getValues(ctx, doc);
+                        kahanSummation.add(result);
                         long rounded = preparedRounding.round(value);
                         assert rounded >= previousRounded;
                         if (rounded == previousRounded) {
@@ -290,6 +350,8 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                         }
                         previousRounded = rounded;
                     }
+                    sums.set(owningBucketOrd, kahanSummation.value());
+                    compensations.set(owningBucketOrd, kahanSummation.delta());
                 }
             }
         };
@@ -305,20 +367,20 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                 CollectionUtil.introSort(buckets, BucketOrder.key(true).comparator());
 
                 InternalDateHistogram.EmptyBucketInfo emptyBucketInfo = minDocCount == 0
-                        ? new InternalDateHistogram.EmptyBucketInfo(rounding.withoutOffset(), buildEmptySubAggregations(), extendedBounds)
-                        : null;
+                    ? new InternalDateHistogram.EmptyBucketInfo(rounding.withoutOffset(), buildEmptySubAggregations(), extendedBounds)
+                    : null;
                 return new InternalDateHistogram(name, buckets, order, minDocCount, rounding.offset(), emptyBucketInfo, formatter,
-                        keyed, metadata());
+                    keyed, metadata());
             });
     }
 
     @Override
     public InternalAggregation buildEmptyAggregation() {
         InternalDateHistogram.EmptyBucketInfo emptyBucketInfo = minDocCount == 0
-                ? new InternalDateHistogram.EmptyBucketInfo(rounding.withoutOffset(), buildEmptySubAggregations(), extendedBounds)
-                : null;
+            ? new InternalDateHistogram.EmptyBucketInfo(rounding.withoutOffset(), buildEmptySubAggregations(), extendedBounds)
+            : null;
         return new InternalDateHistogram(name, Collections.emptyList(), order, minDocCount, rounding.offset(), emptyBucketInfo, formatter,
-                keyed, metadata());
+            keyed, metadata());
     }
 
     @Override
@@ -333,7 +395,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
 
     /**
      * Returns the size of the bucket in specified units.
-     *
+     * <p>
      * If unitSize is null, returns 1.0
      */
     @Override
@@ -450,5 +512,30 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                 return 1.0;
             }
         }
+    }
+
+    private boolean hasMetric(String name) {
+        try {
+            InternalDateHistogram.Metrics.resolve(name);
+            return true;
+        } catch (IllegalArgumentException iae) {
+            return false;
+        }
+    }
+
+    @Override
+    public BucketComparator bucketComparator(String key, SortOrder order) {
+        if (key == null) {
+            throw new IllegalArgumentException("When ordering on a multi-value metrics aggregation a metric name must be specified.");
+        }
+        if (false == hasMetric(key)) {
+            throw new IllegalArgumentException(
+                "Unknown metric name [" + key + "] on multi-value metrics aggregation [" + name() + "]");
+        }
+        return (lhs, rhs) -> Comparators.compareDiscardNaN(metric(key, lhs), metric(key, rhs), order == SortOrder.ASC);
+    }
+
+    public int metric(String name, long owningBucketOrd) {
+        return (int) (sums.get(owningBucketOrd) / counts.get(owningBucketOrd));
     }
 }

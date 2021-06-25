@@ -19,6 +19,7 @@ import org.elasticsearch.search.aggregations.InternalAggregation;
 import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.aggregations.LeafBucketCollector;
 import org.elasticsearch.search.aggregations.bucket.global.GlobalAggregator;
+import org.elasticsearch.search.aggregations.bucket.histogram.SizedBucketAggregator;
 import org.elasticsearch.search.aggregations.bucket.terms.LongKeyedBucketOrds;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
 import org.elasticsearch.search.aggregations.support.AggregationPath;
@@ -361,7 +362,9 @@ public abstract class BucketsAggregator extends AggregatorBase {
     @Override
     public BucketComparator bucketComparator(String key, SortOrder order) {
         if (false == this instanceof SingleBucketAggregator) {
-            return super.bucketComparator(key, order);
+            if (false == this instanceof SizedBucketAggregator) {
+                return super.bucketComparator(key, order);
+            }
         }
         if (key == null || "doc_count".equals(key)) {
             return (lhs, rhs) -> order.reverseMul() * Long.compare(bucketDocCount(lhs), bucketDocCount(rhs));

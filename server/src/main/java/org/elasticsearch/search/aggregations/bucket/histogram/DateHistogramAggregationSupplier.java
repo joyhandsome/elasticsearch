@@ -31,6 +31,7 @@ public interface DateHistogramAggregationSupplier {
                      @Nullable LongBounds extendedBounds,
                      @Nullable LongBounds hardBounds,
                      ValuesSourceConfig valuesSourceConfig,
+                     ValuesSourceConfig valueConfig,
                      AggregationContext context,
                      Aggregator parent,
                      CardinalityUpperBound cardinality,

@@ -31,7 +31,7 @@ public final class DateHistogramAggregatorFactory extends ValuesSourceAggregator
             DateHistogramAggregationBuilder.REGISTRY_KEY,
             List.of(CoreValuesSourceType.DATE, CoreValuesSourceType.NUMERIC, CoreValuesSourceType.BOOLEAN),
             DateHistogramAggregator::build,
-                true);
+            true);
 
         builder.register(DateHistogramAggregationBuilder.REGISTRY_KEY, CoreValuesSourceType.RANGE, DateRangeHistogramAggregator::new, true);
     }
@@ -43,10 +43,12 @@ public final class DateHistogramAggregatorFactory extends ValuesSourceAggregator
     private final LongBounds extendedBounds;
     private final LongBounds hardBounds;
     private final Rounding rounding;
+    private final ValuesSourceConfig valueConfig;
 
     public DateHistogramAggregatorFactory(
         String name,
         ValuesSourceConfig config,
+        ValuesSourceConfig valueConfig,
         BucketOrder order,
         boolean keyed,
         long minDocCount,
@@ -67,6 +69,7 @@ public final class DateHistogramAggregatorFactory extends ValuesSourceAggregator
         this.extendedBounds = extendedBounds;
         this.hardBounds = hardBounds;
         this.rounding = rounding;
+        this.valueConfig = valueConfig;
     }
 
     public long minDocCount() {
@@ -89,6 +92,7 @@ public final class DateHistogramAggregatorFactory extends ValuesSourceAggregator
             extendedBounds,
             hardBounds,
             config,
+            valueConfig,
             context,
             parent,
             cardinality,
@@ -99,6 +103,6 @@ public final class DateHistogramAggregatorFactory extends ValuesSourceAggregator
     @Override
     protected Aggregator createUnmapped(Aggregator parent, Map<String, Object> metadata) throws IOException {
         return new DateHistogramAggregator(name, factories, rounding, null, order, keyed, minDocCount, extendedBounds, hardBounds,
-            config, context, parent, CardinalityUpperBound.NONE, metadata);
+            config, valueConfig, context, parent, CardinalityUpperBound.NONE, metadata);
     }
 }

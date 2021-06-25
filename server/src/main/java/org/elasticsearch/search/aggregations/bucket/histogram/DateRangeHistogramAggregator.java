@@ -63,6 +63,7 @@ class DateRangeHistogramAggregator extends BucketsAggregator {
     private final LongBounds hardBounds;
 
     private final LongKeyedBucketOrds bucketOrds;
+    private final ValuesSourceConfig valueConfig;
 
     DateRangeHistogramAggregator(
         String name,
@@ -74,6 +75,7 @@ class DateRangeHistogramAggregator extends BucketsAggregator {
         @Nullable LongBounds extendedBounds,
         @Nullable LongBounds hardBounds,
         ValuesSourceConfig valuesSourceConfig,
+        ValuesSourceConfig valueConfig,
         AggregationContext context,
         Aggregator parent,
         CardinalityUpperBound cardinality,
@@ -91,6 +93,7 @@ class DateRangeHistogramAggregator extends BucketsAggregator {
         this.hardBounds = hardBounds;
         // TODO: Stop using null here
         this.valuesSource = valuesSourceConfig.hasValues() ? (ValuesSource.Range) valuesSourceConfig.getValuesSource() : null;
+        this.valueConfig = valueConfig;
         this.formatter = valuesSourceConfig.format();
         if (this.valuesSource.rangeType() != RangeType.DATE) {
             throw new IllegalArgumentException("Expected date range type but found range type [" + this.valuesSource.rangeType().name
