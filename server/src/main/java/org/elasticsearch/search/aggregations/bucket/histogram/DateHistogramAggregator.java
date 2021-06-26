@@ -295,7 +295,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
             if (values.advanceExact(doc)) {
                 return values.nextValue();
             } else {
-                return null;
+                return Double.MIN_VALUE;
             }
         }
 
