@@ -356,6 +356,9 @@ public abstract class BucketsAggregator extends AggregatorBase {
         if (this instanceof SingleBucketAggregator) {
             return resolveSortPathOnValidAgg(next, path);
         }
+        if (this instanceof SizedBucketAggregator) {
+            return resolveSortPathOnValidAgg(next, path);
+        }
         return super.resolveSortPath(next, path);
     }
 
