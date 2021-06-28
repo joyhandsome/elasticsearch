@@ -20,18 +20,9 @@ import org.elasticsearch.common.util.BigArrays;
 import org.elasticsearch.common.util.Comparators;
 import org.elasticsearch.common.util.DoubleArray;
 import org.elasticsearch.common.util.LongArray;
-import org.elasticsearch.index.fielddata.SortedBinaryDocValues;
 import org.elasticsearch.index.fielddata.SortedNumericDoubleValues;
 import org.elasticsearch.search.DocValueFormat;
-import org.elasticsearch.search.aggregations.AdaptingAggregator;
-import org.elasticsearch.search.aggregations.Aggregator;
-import org.elasticsearch.search.aggregations.AggregatorFactories;
-import org.elasticsearch.search.aggregations.BucketOrder;
-import org.elasticsearch.search.aggregations.CardinalityUpperBound;
-import org.elasticsearch.search.aggregations.InternalAggregation;
-import org.elasticsearch.search.aggregations.InternalAggregations;
-import org.elasticsearch.search.aggregations.LeafBucketCollector;
-import org.elasticsearch.search.aggregations.LeafBucketCollectorBase;
+import org.elasticsearch.search.aggregations.*;
 import org.elasticsearch.search.aggregations.bucket.BucketsAggregator;
 import org.elasticsearch.search.aggregations.bucket.filter.FiltersAggregator;
 import org.elasticsearch.search.aggregations.bucket.range.InternalDateRange;
@@ -40,15 +31,16 @@ import org.elasticsearch.search.aggregations.bucket.range.RangeAggregator;
 import org.elasticsearch.search.aggregations.bucket.range.RangeAggregatorSupplier;
 import org.elasticsearch.search.aggregations.bucket.terms.LongKeyedBucketOrds;
 import org.elasticsearch.search.aggregations.metrics.CompensatedSum;
-import org.elasticsearch.search.aggregations.metrics.InternalStats;
-import org.elasticsearch.search.aggregations.metrics.NumericMetricsAggregator;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
 import org.elasticsearch.search.aggregations.support.ValuesSource;
 import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
 import org.elasticsearch.search.sort.SortOrder;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.function.BiConsumer;
 
 /**
@@ -92,25 +84,26 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         Map<String, Object> metadata
     ) throws IOException {
         Rounding.Prepared preparedRounding = valuesSourceConfig.roundingPreparer().apply(rounding);
-        Aggregator asRange = adaptIntoRangeOrNull(
-            name,
-            factories,
-            rounding,
-            preparedRounding,
-            order,
-            keyed,
-            minDocCount,
-            extendedBounds,
-            hardBounds,
-            valuesSourceConfig,
-            context,
-            parent,
-            cardinality,
-            metadata
-        );
-        if (asRange != null) {
-            return asRange;
-        }
+//        Aggregator asRange = null;
+//            adaptIntoRangeOrNull(
+//            name,
+//            factories,
+//            rounding,
+//            preparedRounding,
+//            order,
+//            keyed,
+//            minDocCount,
+//            extendedBounds,
+//            hardBounds,
+//            valuesSourceConfig,
+//            context,
+//            parent,
+//            cardinality,
+//            metadata
+//        );
+//        if (asRange != null) {
+//            return asRange;
+//        }
         return new DateHistogramAggregator(
             name,
             factories,
@@ -536,6 +529,23 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
     }
 
     public int metric(String name, long owningBucketOrd) {
-        return (int) (sums.get(owningBucketOrd) / counts.get(owningBucketOrd));
+        switch (Metrics.resolve(name)) {
+            case avg:
+                return (int) (sums.get(owningBucketOrd) / counts.get(owningBucketOrd));
+            case sum:
+                return (int) sums.get(owningBucketOrd);
+            case count:
+                return (int) counts.get(owningBucketOrd);
+            default:
+                throw new IllegalArgumentException(name + " is not supported now!");
+        }
+    }
+
+    enum Metrics {
+        count, sum, avg;
+
+        public static Metrics resolve(String name) {
+            return Metrics.valueOf(name);
+        }
     }
 }
