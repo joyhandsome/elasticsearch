@@ -7,33 +7,23 @@
  */
 package org.elasticsearch.search.aggregations.bucket.histogram;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import org.apache.logging.log4j.core.jackson.JsonConstants;
 import org.apache.lucene.util.CollectionUtil;
 import org.apache.lucene.util.PriorityQueue;
 import org.elasticsearch.common.Rounding;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.common.xcontent.json.JsonXContent;
 import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.*;
 import org.elasticsearch.search.aggregations.bucket.IteratorAndCurrent;
 import org.elasticsearch.search.aggregations.bucket.MultiBucketsAggregation;
-import org.elasticsearch.search.aggregations.metrics.InternalAvg;
-import org.elasticsearch.search.aggregations.metrics.InternalMax;
 import org.elasticsearch.search.aggregations.metrics.InternalMin;
 import org.elasticsearch.search.aggregations.metrics.InternalSum;
 
 import java.io.IOException;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.ListIterator;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 
 /**
  * Implementation of {@link Histogram}.
@@ -517,18 +507,10 @@ public final class InternalDateHistogram extends InternalMultiBucketAggregation<
     }
 
     private double processAvg() {
-        double sum = 0;
-        long count = 0;
-        for (Bucket bucket : buckets) {
-            for (Aggregation aggregation : bucket.getAggregations().asList()) {
-                sum = sum + ((InternalAvg) aggregation).value();
-                count++;
-            }
-        }
-        if (count == 0) {
+        if (buckets.size() == 0) {
             return 0;
         }
-        return sum / count;
+        return processSum() / buckets.size();
     }
 
     private double processSum() {
