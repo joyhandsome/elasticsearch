@@ -272,61 +272,28 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         return super.scoreMode();
     }
 
-    static class DoubleTermValuesSource {
-        ValuesSource.Numeric source;
-
-        DoubleTermValuesSource(ValuesSource valuesSource) {
-            this.source = (ValuesSource.Numeric) valuesSource;
-        }
-
-        public Double getValues(LeafReaderContext ctx, int doc) throws IOException {
-            SortedNumericDoubleValues values = source.doubleValues(ctx);
-            return collectValues(values, doc);
-        }
-
-        private Double collectValues(SortedNumericDoubleValues values, int doc) throws IOException {
-            if (values.advanceExact(doc)) {
-                return values.nextValue();
-            } else {
-                return Double.MIN_VALUE;
-            }
-        }
-
-    }
-
     @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         if (valuesSource == null) {
             return LeafBucketCollector.NO_OP_COLLECTOR;
         }
         SortedNumericDocValues values = valuesSource.longValues(ctx);
-        DoubleTermValuesSource doubleTermValuesSource = new DoubleTermValuesSource(valueSource);
+        SortedNumericDoubleValues fieldValues = valueSource.doubleValues(ctx);
         final CompensatedSum kahanSummation = new CompensatedSum(0, 0);
 
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {
-                if (owningBucketOrd >= counts.size()) {
-                    final long from = counts.size();
-                    final long overSize = BigArrays.overSize(owningBucketOrd + 1);
-                    counts = bigArrays().resize(counts, overSize);
-                    sums = bigArrays().resize(sums, overSize);
-                    compensations = bigArrays().resize(compensations, overSize);
-                }
+                counts = bigArrays().grow(counts, owningBucketOrd + 1);
+                sums = bigArrays().grow(sums, owningBucketOrd + 1);
+                compensations = bigArrays().grow(compensations, owningBucketOrd + 1);
 
                 if (values.advanceExact(doc)) {
                     int valuesCount = values.docValueCount();
 
-                    counts.increment(owningBucketOrd, valuesCount);
-                    double sum = sums.get(owningBucketOrd);
-                    double compensation = compensations.get(owningBucketOrd);
-                    kahanSummation.reset(sum, compensation);
-
                     long previousRounded = Long.MIN_VALUE;
                     for (int i = 0; i < valuesCount; ++i) {
                         long value = values.nextValue();
-                        double result = doubleTermValuesSource.getValues(ctx, doc);
-                        kahanSummation.add(result);
                         long rounded = preparedRounding.round(value);
                         assert rounded >= previousRounded;
                         if (rounded == previousRounded) {
@@ -342,6 +309,18 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                             }
                         }
                         previousRounded = rounded;
+                    }
+                    if (fieldValues.advanceExact(doc)) {
+                        int fieldValueCount = fieldValues.docValueCount();
+                        counts.increment(owningBucketOrd, fieldValueCount);
+                        double sum = sums.get(owningBucketOrd);
+                        double compensation = compensations.get(owningBucketOrd);
+                        kahanSummation.reset(sum, compensation);
+
+                        for (int i = 0; i < fieldValueCount; i++) {
+                            double value = fieldValues.nextValue();
+                            kahanSummation.add(value);
+                        }
                     }
                     sums.set(owningBucketOrd, kahanSummation.value());
                     compensations.set(owningBucketOrd, kahanSummation.delta());
