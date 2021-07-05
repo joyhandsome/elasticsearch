@@ -31,11 +31,12 @@ public class ParsedDateHistogram extends ParsedMultiBucketAggregation<ParsedDate
     }
 
     private static final ObjectParser<ParsedDateHistogram, Void> PARSER =
-            new ObjectParser<>(ParsedDateHistogram.class.getSimpleName(), true, ParsedDateHistogram::new);
+        new ObjectParser<>(ParsedDateHistogram.class.getSimpleName(), true, ParsedDateHistogram::new);
+
     static {
         declareMultiBucketAggregationFields(PARSER,
-                parser -> ParsedBucket.fromXContent(parser, false),
-                parser -> ParsedBucket.fromXContent(parser, true));
+            parser -> ParsedBucket.fromXContent(parser, false),
+            parser -> ParsedBucket.fromXContent(parser, true));
     }
 
     public static ParsedDateHistogram fromXContent(XContentParser parser, String name) throws IOException {
@@ -66,6 +67,10 @@ public class ParsedDateHistogram extends ParsedMultiBucketAggregation<ParsedDate
                 return Long.toString(key);
             }
             return null;
+        }
+
+        public long key() {
+            return key;
         }
 
         @Override

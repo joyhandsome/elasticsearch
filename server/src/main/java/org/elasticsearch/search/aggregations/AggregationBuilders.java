@@ -30,6 +30,7 @@ import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
 import org.elasticsearch.search.aggregations.bucket.histogram.HistogramAggregationBuilder;
 import org.elasticsearch.search.aggregations.bucket.missing.Missing;
 import org.elasticsearch.search.aggregations.bucket.missing.MissingAggregationBuilder;
+import org.elasticsearch.search.aggregations.bucket.multiterms.MultiTermsAggregationBuilder;
 import org.elasticsearch.search.aggregations.bucket.nested.Nested;
 import org.elasticsearch.search.aggregations.bucket.nested.NestedAggregationBuilder;
 import org.elasticsearch.search.aggregations.bucket.nested.ReverseNested;
@@ -177,7 +178,7 @@ public class AggregationBuilders {
     /**
      * Create a new {@link AdjacencyMatrix} aggregation with the given name and separator
      */
-    public static AdjacencyMatrixAggregationBuilder adjacencyMatrix(String name, String separator,  Map<String, QueryBuilder> filters) {
+    public static AdjacencyMatrixAggregationBuilder adjacencyMatrix(String name, String separator, Map<String, QueryBuilder> filters) {
         return new AdjacencyMatrixAggregationBuilder(name, separator, filters);
     }
 
@@ -366,5 +367,9 @@ public class AggregationBuilders {
      */
     public static CompositeAggregationBuilder composite(String name, List<CompositeValuesSourceBuilder<?>> sources) {
         return new CompositeAggregationBuilder(name, sources);
+    }
+
+    public static MultiTermsAggregationBuilder multiTerms(String name) {
+        return new MultiTermsAggregationBuilder(name);
     }
 }
