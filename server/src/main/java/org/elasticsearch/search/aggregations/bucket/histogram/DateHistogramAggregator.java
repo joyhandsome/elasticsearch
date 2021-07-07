@@ -290,12 +290,6 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {
-                if (finalKahanSummation != null) {
-                    counts = bigArrays().grow(counts, owningBucketOrd + 1);
-                    sums = bigArrays().grow(sums, owningBucketOrd + 1);
-                    compensations = bigArrays().grow(compensations, owningBucketOrd + 1);
-                }
-
                 if (values.advanceExact(doc)) {
                     int valuesCount = values.docValueCount();
 
@@ -319,6 +313,10 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                         previousRounded = rounded;
                     }
                     if (finalFieldValues != null) {
+                        counts = bigArrays().grow(counts, owningBucketOrd + 1);
+                        sums = bigArrays().grow(sums, owningBucketOrd + 1);
+                        compensations = bigArrays().grow(compensations, owningBucketOrd + 1);
+
                         if (finalFieldValues.advanceExact(doc)) {
                             int fieldValueCount = finalFieldValues.docValueCount();
                             counts.increment(owningBucketOrd, fieldValueCount);
@@ -342,8 +340,11 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
     @Override
     public InternalAggregation[] buildAggregations(long[] owningBucketOrds) throws IOException {
         return buildAggregationsForVariableBuckets(owningBucketOrds, bucketOrds,
-            (bucketValue, docCount, subAggregationResults) -> {
-                return new InternalDateHistogram.Bucket(bucketValue, docCount, keyed, formatter, subAggregationResults);
+            new BucketBuilderForVariable<InternalDateHistogram.Bucket>() {
+                @Override
+                public InternalDateHistogram.Bucket build(long bucketValue, long docCount, InternalAggregations subAggregationResults) {
+                    return new InternalDateHistogram.Bucket(bucketValue, docCount, keyed, formatter, subAggregationResults);
+                }
             }, (owningBucketOrd, buckets) -> {
                 // the contract of the histogram aggregation is that shards must return buckets ordered by key in ascending order
                 CollectionUtil.introSort(buckets, BucketOrder.key(true).comparator());
