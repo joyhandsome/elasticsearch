@@ -258,9 +258,11 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
 
         bucketOrds = LongKeyedBucketOrds.build(bigArrays(), cardinality);
 
-        sums = bigArrays().newDoubleArray(1, true);
-        counts = bigArrays().newLongArray(1, true);
-        compensations = bigArrays().newDoubleArray(1, true);
+        if (this.parent() != null) {
+            sums = bigArrays().newDoubleArray(1, true);
+            counts = bigArrays().newLongArray(1, true);
+            compensations = bigArrays().newDoubleArray(1, true);
+        }
     }
 
     @Override
@@ -277,15 +279,22 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
             return LeafBucketCollector.NO_OP_COLLECTOR;
         }
         SortedNumericDocValues values = valuesSource.longValues(ctx);
-        SortedNumericDoubleValues fieldValues = valueSource.doubleValues(ctx);
-        final CompensatedSum kahanSummation = new CompensatedSum(0, 0);
-
+        SortedNumericDoubleValues fieldValues = null;
+        CompensatedSum kahanSummation = null;
+        if (this.parent() != null) {
+            fieldValues = valueSource.doubleValues(ctx);
+            kahanSummation = new CompensatedSum(0, 0);
+        }
+        CompensatedSum finalKahanSummation = kahanSummation;
+        SortedNumericDoubleValues finalFieldValues = fieldValues;
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long owningBucketOrd) throws IOException {
-                counts = bigArrays().grow(counts, owningBucketOrd + 1);
-                sums = bigArrays().grow(sums, owningBucketOrd + 1);
-                compensations = bigArrays().grow(compensations, owningBucketOrd + 1);
+                if (finalKahanSummation != null) {
+                    counts = bigArrays().grow(counts, owningBucketOrd + 1);
+                    sums = bigArrays().grow(sums, owningBucketOrd + 1);
+                    compensations = bigArrays().grow(compensations, owningBucketOrd + 1);
+                }
 
                 if (values.advanceExact(doc)) {
                     int valuesCount = values.docValueCount();
@@ -309,20 +318,22 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
                         }
                         previousRounded = rounded;
                     }
-                    if (fieldValues.advanceExact(doc)) {
-                        int fieldValueCount = fieldValues.docValueCount();
-                        counts.increment(owningBucketOrd, fieldValueCount);
-                        double sum = sums.get(owningBucketOrd);
-                        double compensation = compensations.get(owningBucketOrd);
-                        kahanSummation.reset(sum, compensation);
+                    if (finalFieldValues != null) {
+                        if (finalFieldValues.advanceExact(doc)) {
+                            int fieldValueCount = finalFieldValues.docValueCount();
+                            counts.increment(owningBucketOrd, fieldValueCount);
+                            double sum = sums.get(owningBucketOrd);
+                            double compensation = compensations.get(owningBucketOrd);
+                            finalKahanSummation.reset(sum, compensation);
 
-                        for (int i = 0; i < fieldValueCount; i++) {
-                            double value = fieldValues.nextValue();
-                            kahanSummation.add(value);
+                            for (int i = 0; i < fieldValueCount; i++) {
+                                double value = finalFieldValues.nextValue();
+                                finalKahanSummation.add(value);
+                            }
                         }
+                        sums.set(owningBucketOrd, finalKahanSummation.value());
+                        compensations.set(owningBucketOrd, finalKahanSummation.delta());
                     }
-                    sums.set(owningBucketOrd, kahanSummation.value());
-                    compensations.set(owningBucketOrd, kahanSummation.delta());
                 }
             }
         };
@@ -487,7 +498,7 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
 
     private boolean hasMetric(String name) {
         try {
-            InternalDateHistogram.Metrics.resolve(name);
+            Metrics.resolve(name);
             return true;
         } catch (IllegalArgumentException iae) {
             return false;
@@ -507,20 +518,14 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
     }
 
     public int metric(String name, long owningBucketOrd) {
-        switch (Metrics.resolve(name)) {
-            case avg:
-                return (int) (sums.get(owningBucketOrd) / counts.get(owningBucketOrd));
-            case sum:
-                return (int) sums.get(owningBucketOrd);
-            case count:
-                return (int) counts.get(owningBucketOrd);
-            default:
-                throw new IllegalArgumentException(name + " is not supported now!");
+        if (Metrics.resolve(name) == Metrics.avg) {
+            return (int) (sums.get(owningBucketOrd) / counts.get(owningBucketOrd));
         }
+        throw new IllegalArgumentException(name + " is not supported now!");
     }
 
     enum Metrics {
-        count, sum, avg;
+        avg;
 
         public static Metrics resolve(String name) {
             return Metrics.valueOf(name);

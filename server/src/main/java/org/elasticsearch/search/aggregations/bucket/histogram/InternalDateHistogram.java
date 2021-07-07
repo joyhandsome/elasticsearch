@@ -17,6 +17,7 @@ import org.elasticsearch.search.DocValueFormat;
 import org.elasticsearch.search.aggregations.*;
 import org.elasticsearch.search.aggregations.bucket.IteratorAndCurrent;
 import org.elasticsearch.search.aggregations.bucket.MultiBucketsAggregation;
+import org.elasticsearch.search.aggregations.metrics.InternalAvg;
 import org.elasticsearch.search.aggregations.metrics.InternalMin;
 import org.elasticsearch.search.aggregations.metrics.InternalSum;
 
@@ -492,62 +493,19 @@ public final class InternalDateHistogram extends InternalMultiBucketAggregation<
 
     @Override
     public double sortValue(String key) {
-        switch (Metrics.resolve(key)) {
-            case avg:
-                return processAvg();
-            case max:
-                return processMax();
-            case min:
-                return processMin();
-            case sum:
-                return processSum();
-            default:
-                throw new IllegalArgumentException("Unknown value [" + key + "] in common stats aggregation");
-        }
+        return processAvg();
     }
 
     private double processAvg() {
         if (buckets.size() == 0) {
             return 0;
         }
-        return processSum() / buckets.size();
-    }
-
-    private double processSum() {
         double sum = 0;
         for (Bucket bucket : buckets) {
             for (Aggregation aggregation : bucket.getAggregations().asList()) {
-                sum = sum + ((InternalSum) aggregation).value();
+                sum = sum + ((InternalAvg) aggregation).value();
             }
         }
-        return sum;
-    }
-
-    private double processMin() {
-        double min = Double.NaN;
-        for (Bucket bucket : buckets) {
-            for (Aggregation aggregation : bucket.getAggregations().asList()) {
-                min = Double.min(min, ((InternalMin) aggregation).value());
-            }
-        }
-        return min;
-    }
-
-    private double processMax() {
-        double max = Double.NaN;
-        for (Bucket bucket : buckets) {
-            for (Aggregation aggregation : bucket.getAggregations().asList()) {
-                max = Double.max(max, ((InternalMin) aggregation).value());
-            }
-        }
-        return max;
-    }
-
-    enum Metrics {
-        sum, min, max, avg;
-
-        public static InternalDateHistogram.Metrics resolve(String name) {
-            return InternalDateHistogram.Metrics.valueOf(name);
-        }
+        return sum / buckets.size();
     }
 }
