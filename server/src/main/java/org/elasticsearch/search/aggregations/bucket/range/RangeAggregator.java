@@ -16,6 +16,9 @@ import org.elasticsearch.common.ParseField;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.common.io.stream.Writeable;
+import org.elasticsearch.common.util.Comparators;
+import org.elasticsearch.common.util.DoubleArray;
+import org.elasticsearch.common.util.LongArray;
 import org.elasticsearch.common.xcontent.ConstructingObjectParser;
 import org.elasticsearch.common.xcontent.ContextParser;
 import org.elasticsearch.common.xcontent.ObjectParser.ValueType;
@@ -40,10 +43,13 @@ import org.elasticsearch.search.aggregations.bucket.BucketsAggregator;
 import org.elasticsearch.search.aggregations.bucket.filter.FiltersAggregator;
 import org.elasticsearch.search.aggregations.bucket.filter.InternalFilters;
 import org.elasticsearch.search.aggregations.bucket.range.InternalRange.Factory;
+import org.elasticsearch.search.aggregations.metrics.CompensatedSum;
 import org.elasticsearch.search.aggregations.support.AggregationContext;
+import org.elasticsearch.search.aggregations.support.CoreValuesSourceType;
 import org.elasticsearch.search.aggregations.support.ValuesSource;
 import org.elasticsearch.search.aggregations.support.ValuesSource.Numeric;
 import org.elasticsearch.search.aggregations.support.ValuesSourceConfig;
+import org.elasticsearch.search.sort.SortOrder;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -240,10 +246,10 @@ public abstract class RangeAggregator extends BucketsAggregator {
             }
             Range other = (Range) obj;
             return Objects.equals(key, other.key)
-                    && Objects.equals(from, other.from)
-                    && Objects.equals(fromAsStr, other.fromAsStr)
-                    && Objects.equals(to, other.to)
-                    && Objects.equals(toAsStr, other.toAsStr);
+                && Objects.equals(from, other.from)
+                && Objects.equals(fromAsStr, other.fromAsStr)
+                && Objects.equals(to, other.to)
+                && Objects.equals(toAsStr, other.toAsStr);
         }
     }
 
@@ -465,12 +471,17 @@ public abstract class RangeAggregator extends BucketsAggregator {
     }
 
     private final ValuesSource.Numeric valuesSource;
+    private final ValuesSource.Numeric fieldValueSource;
     private final DocValueFormat format;
     protected final Range[] ranges;
     private final boolean keyed;
     private final InternalRange.Factory rangeFactory;
     private final double averageDocsPerRange;
     private final Map<String, Object> filtersDebug;
+
+    DoubleArray sums;
+    LongArray counts;
+    DoubleArray compensations;
 
     private RangeAggregator(
         String name,
@@ -496,6 +507,13 @@ public abstract class RangeAggregator extends BucketsAggregator {
         this.ranges = ranges;
         this.averageDocsPerRange = averageDocsPerRange;
         this.filtersDebug = filtersDebug;
+        ValuesSourceConfig valuesConfig = ValuesSourceConfig.resolve(context, org.elasticsearch.search.aggregations.support.ValueType.DOUBLE, "value", null, null, null, null, CoreValuesSourceType.NUMERIC);
+        this.fieldValueSource = (Numeric) valuesConfig.getValuesSource();
+        if (this.parent() != null) {
+            sums = bigArrays().newDoubleArray(1, true);
+            counts = bigArrays().newLongArray(1, true);
+            compensations = bigArrays().newDoubleArray(1, true);
+        }
     }
 
     @Override
@@ -509,6 +527,16 @@ public abstract class RangeAggregator extends BucketsAggregator {
     @Override
     public LeafBucketCollector getLeafCollector(LeafReaderContext ctx, LeafBucketCollector sub) throws IOException {
         final SortedNumericDoubleValues values = valuesSource.doubleValues(ctx);
+
+        SortedNumericDoubleValues fieldValues = null;
+        CompensatedSum kahanSummation = null;
+        if (this.parent() != null) {
+            fieldValues = fieldValueSource.doubleValues(ctx);
+            kahanSummation = new CompensatedSum(0, 0);
+        }
+        CompensatedSum finalKahanSummation = kahanSummation;
+        SortedNumericDoubleValues finalFieldValues = fieldValues;
+
         return new LeafBucketCollectorBase(sub, values) {
             @Override
             public void collect(int doc, long bucket) throws IOException {
@@ -518,6 +546,26 @@ public abstract class RangeAggregator extends BucketsAggregator {
                         final double value = values.nextValue();
                         lo = RangeAggregator.this.collect(sub, doc, value, bucket, lo);
                     }
+                }
+                if (finalFieldValues != null) {
+                    counts = bigArrays().grow(counts, bucket + 1);
+                    sums = bigArrays().grow(sums, bucket + 1);
+                    compensations = bigArrays().grow(compensations, bucket + 1);
+
+                    if (finalFieldValues.advanceExact(doc)) {
+                        int fieldValueCount = finalFieldValues.docValueCount();
+                        counts.increment(bucket, fieldValueCount);
+                        double sum = sums.get(bucket);
+                        double compensation = compensations.get(bucket);
+                        finalKahanSummation.reset(sum, compensation);
+
+                        for (int i = 0; i < fieldValueCount; i++) {
+                            double value = finalFieldValues.nextValue();
+                            finalKahanSummation.add(value);
+                        }
+                    }
+                    sums.set(bucket, finalKahanSummation.value());
+                    compensations.set(bucket, finalKahanSummation.delta());
                 }
             }
         };
@@ -543,7 +591,7 @@ public abstract class RangeAggregator extends BucketsAggregator {
         for (int i = 0; i < ranges.length; i++) {
             Range range = ranges[i];
             org.elasticsearch.search.aggregations.bucket.range.Range.Bucket bucket =
-                    rangeFactory.createBucket(range.key, range.from, range.to, 0, subAggs, keyed, format);
+                rangeFactory.createBucket(range.key, range.from, range.to, 0, subAggs, keyed, format);
             buckets.add(bucket);
         }
         // value source can be null in the case of unmapped fields
@@ -649,6 +697,18 @@ public abstract class RangeAggregator extends BucketsAggregator {
             }
             return lo;
         }
+
+        @Override
+        public BucketComparator bucketComparator(String key, SortOrder order) {
+            if (key == null) {
+                throw new IllegalArgumentException("When ordering on a multi-value metrics aggregation a metric name must be specified.");
+            }
+            if (false == hasMetric(key)) {
+                throw new IllegalArgumentException(
+                    "Unknown metric name [" + key + "] on multi-value metrics aggregation [" + name() + "]");
+            }
+            return (lhs, rhs) -> Comparators.compareDiscardNaN(metric(key, lhs), metric(key, rhs), order == SortOrder.ASC);
+        }
     }
 
     private static class Overlap extends RangeAggregator {
@@ -734,12 +794,24 @@ public abstract class RangeAggregator extends BucketsAggregator {
 
             for (int i = startLo; i <= endHi; ++i) {
                 if (ranges[i].matches(value)) {
-                            collectBucket(sub, doc, subBucketOrdinal(owningBucketOrdinal, i));
+                    collectBucket(sub, doc, subBucketOrdinal(owningBucketOrdinal, i));
                 }
             }
 
             // The next value must fall in the next bucket to be collected.
             return endHi + 1;
+        }
+
+        @Override
+        public BucketComparator bucketComparator(String key, SortOrder order) {
+            if (key == null) {
+                throw new IllegalArgumentException("When ordering on a multi-value metrics aggregation a metric name must be specified.");
+            }
+            if (false == hasMetric(key)) {
+                throw new IllegalArgumentException(
+                    "Unknown metric name [" + key + "] on multi-value metrics aggregation [" + name() + "]");
+            }
+            return (lhs, rhs) -> Comparators.compareDiscardNaN(metric(key, lhs), metric(key, rhs), order == SortOrder.ASC);
         }
     }
 
@@ -819,5 +891,28 @@ public abstract class RangeAggregator extends BucketsAggregator {
             lastEnd = ranges[i].to;
         }
         return false;
+    }
+    public int metric(String name, long owningBucketOrd) {
+        if (Metrics.resolve(name) == Metrics.avg) {
+            return (int) (sums.get(owningBucketOrd) / counts.get(owningBucketOrd));
+        }
+        throw new IllegalArgumentException(name + " is not supported now!");
+    }
+
+    enum Metrics {
+        avg;
+
+        public static Metrics resolve(String name) {
+            return Metrics.valueOf(name);
+        }
+    }
+
+    boolean hasMetric(String name) {
+        try {
+            Metrics.resolve(name);
+            return true;
+        } catch (IllegalArgumentException iae) {
+            return false;
+        }
     }
 }

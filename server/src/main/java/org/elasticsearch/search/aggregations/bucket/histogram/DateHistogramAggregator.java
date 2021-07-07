@@ -83,26 +83,25 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
         Map<String, Object> metadata
     ) throws IOException {
         Rounding.Prepared preparedRounding = valuesSourceConfig.roundingPreparer().apply(rounding);
-//        Aggregator asRange = null;
-//            adaptIntoRangeOrNull(
-//            name,
-//            factories,
-//            rounding,
-//            preparedRounding,
-//            order,
-//            keyed,
-//            minDocCount,
-//            extendedBounds,
-//            hardBounds,
-//            valuesSourceConfig,
-//            context,
-//            parent,
-//            cardinality,
-//            metadata
-//        );
-//        if (asRange != null) {
-//            return asRange;
-//        }
+        Aggregator asRange = adaptIntoRangeOrNull(
+            name,
+            factories,
+            rounding,
+            preparedRounding,
+            order,
+            keyed,
+            minDocCount,
+            extendedBounds,
+            hardBounds,
+            valuesSourceConfig,
+            context,
+            parent,
+            cardinality,
+            metadata
+        );
+        if (asRange != null) {
+            return asRange;
+        }
         return new DateHistogramAggregator(
             name,
             factories,
@@ -494,6 +493,11 @@ class DateHistogramAggregator extends BucketsAggregator implements SizedBucketAg
             } else {
                 return 1.0;
             }
+        }
+
+        @Override
+        public BucketComparator bucketComparator(String key, SortOrder order) {
+            return this.delegate().bucketComparator(key, order);
         }
     }
 
